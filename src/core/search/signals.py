@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
@@ -31,9 +33,16 @@ from src.core.search.core_indexes import (
 )
 from src.core.search.registry import get_index
 from src.core.search.sync import delete_documents, ensure_registry_loaded, index_documents
-from src.core.search.tasks import delete_document_task, index_document_task
+from src.core.search.tasks import (
+  delete_document_task,
+  index_document_task,
+  index_documents_task,
+  write_document_batches,
+)
 
 logger = logging.getLogger('search')
+
+_search_batch: ContextVar[dict[str, list] | None] = ContextVar('search_index_batch', default=None)
 
 User = get_user_model()
 
@@ -51,6 +60,10 @@ _MODEL_INDEX = {
 
 def _enqueue_index(index_uid: str, document: dict) -> None:
   """Ставит задачу в Celery; при недоступном брокере — синхронно (без падения команды)."""
+  bucket = _search_batch.get()
+  if bucket is not None:
+    bucket.setdefault(index_uid, []).append(document)
+    return
   try:
     index_document_task.delay(index_uid, document)
     return
@@ -67,6 +80,40 @@ def _enqueue_index(index_uid: str, document: dict) -> None:
       index_documents(defn, [document])
   except Exception:
     logger.exception('search: синхронная индексация %s не удалась', index_uid)
+
+
+def _flush_search_batch(bucket: dict[str, list]) -> None:
+  for index_uid, documents in bucket.items():
+    if not documents:
+      continue
+    try:
+      index_documents_task.delay(index_uid, documents)
+      continue
+    except Exception:
+      logger.warning(
+        'search: не удалось поставить index_documents в Celery (%s) — синхронная запись',
+        index_uid,
+        exc_info=True,
+      )
+    try:
+      ensure_registry_loaded()
+      defn = get_index(index_uid)
+      if defn:
+        write_document_batches(defn, documents)
+    except Exception:
+      logger.exception('search: синхронная индексация %s не удалась', index_uid)
+
+
+@contextmanager
+def batch_search_index():
+  """Копит документы поиска и ставит одну задачу на индекс при выходе."""
+  bucket: dict[str, list] = {}
+  token = _search_batch.set(bucket)
+  try:
+    yield
+  finally:
+    _search_batch.reset(token)
+    _flush_search_batch(bucket)
 
 
 def _enqueue_delete(index_uid: str, document_id: str) -> None:

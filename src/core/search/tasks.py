@@ -11,6 +11,14 @@ from .sync import delete_documents, ensure_registry_loaded, index_documents, rei
 
 logger = logging.getLogger('celery.core.search')
 
+INDEX_BATCH_SIZE = 500
+
+
+def write_document_batches(defn, documents: list[dict]) -> None:
+  rows = list(documents or [])
+  for start in range(0, len(rows), INDEX_BATCH_SIZE):
+    index_documents(defn, rows[start:start + INDEX_BATCH_SIZE])
+
 
 @shared_task(name='core.search.index_document', bind=True, max_retries=3, default_retry_delay=15)
 def index_document_task(self, index_uid: str, document: dict) -> bool:
@@ -23,6 +31,20 @@ def index_document_task(self, index_uid: str, document: dict) -> bool:
     return True
   except Exception as exc:
     logger.exception('core.search.index_document: %s', index_uid)
+    raise self.retry(exc=exc) from exc
+
+
+@shared_task(name='core.search.index_documents', bind=True, max_retries=3, default_retry_delay=15)
+def index_documents_task(self, index_uid: str, documents: list) -> bool:
+  try:
+    ensure_registry_loaded()
+    defn = get_index(index_uid)
+    if not defn:
+      return False
+    write_document_batches(defn, documents or [])
+    return True
+  except Exception as exc:
+    logger.exception('core.search.index_documents: %s', index_uid)
     raise self.retry(exc=exc) from exc
 
 
