@@ -79,6 +79,10 @@ ADP_SESSION_SCOPED_MODULE_PERMISSIONS = 'adp.session_scoped_module_permissions'
 ADP_SESSION_SCOPED_DENIED_PERMISSIONS = 'adp.session_scoped_denied_permissions'
 AUDIT_CAN_READ = 'audit.can_read'
 AUDIT_RECORD = 'audit.record'
+# Лента событий одного модуля-источника для его собственного экрана.
+# Kwargs: source_module, entity_types?, actions?, with_actor?, limit, offset. Ответ — {count, results[]},
+# запись — JSON-примитивы без IP, User-Agent и meta. Право на чтение проверяет вызывающий модуль.
+AUDIT_LIST_EVENTS = 'audit.list_events'
 
 CORE_USER_DELETE = 'core.user_delete'
 CORE_BULK_USER_CREATE = 'core.bulk_user_create'
